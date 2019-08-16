@@ -1,0 +1,327 @@
+#=======================================IMPORTANT=======================================#
+#When adding sprites, please label them "image1.png", "image2.png", image3".png", etc!!!
+#Once you have done that, adjust "state.spriteQuantity" to how many sprites you have!
+#=======================================================================================#
+
+class PoorManPlatformerPhysics
+  attr_accessor :grid, :inputs, :state, :outputs
+
+  def tick
+    defaults
+    render
+    calc
+    process_inputs
+  end
+
+  def defaults
+    #Setting all the default variables. '||' states that initialization occurs only in the first frame
+    state.tile_size               = 64
+    state.gravity                 = -0.2
+    state.previous_tile_size    ||= state.tile_size
+    state.x                     ||= 0
+    state.y                     ||= 800
+    state.dy                    ||= 0
+    state.dx                    ||= 0
+    state.world                 ||= []
+    state.world_lookup          ||= {}
+    state.world_collision_rects ||= []
+    state.mode                  ||= :creating            #alternates between :creating and :selecting for sprite selection
+    state.selectMenu            ||= [0, 720, 1280, 720]
+    state.spriteQuantity        ||= 12                    #IMPORTANT TO ALTER IF SPRITES ADDED!
+    state.spriteCords           ||= []
+    state.spriteSize            ||= 50
+    state.bannerCords           ||= [535, 680 + 720]
+    state.spriteSelected        ||= 2                    #default sprite value (1 is black, which is also the background, hence 2)
+
+    #Sets all the cordinate values for the sprite selection screen
+    if state.spriteCords == []
+      count = 1
+      tempX = 100
+      tempY = 500 + 720
+      state.spriteQuantity.times do
+        state.spriteCords += [[tempX, tempY, count]]
+        tempX += 100
+        count += 1
+        if tempX > 1280 - (100 + state.spriteSize)
+          tempX = 100
+          tempY -= 75
+        end
+      end
+    end
+    
+  end
+
+  def render
+    #Sets background color to black
+    outputs.solids << grid.rect
+
+    #Places sprites
+    outputs.sprites <<. state.world.map do |x, y, sprite|
+      [x * state.tile_size,
+       y * state.tile_size,
+       state.tile_size,
+       state.tile_size,
+       'sprites/image' + sprite.to_s + '.png']
+    end
+
+    #Player green box
+    outputs.primitives << [:borders,
+                           state.x,
+                           state.y,
+                           state.tile_size,
+                           state.tile_size,  0, 180, 0]
+
+    #Label in top left of the screen
+    outputs.primitives << [:labels, 963, 700, 'Press \'s\' to access sprites', 1, 0, 255, 255, 255, 255]
+    outputs.primitives << [:labels, 920, 675, 'Click existing sprite to delete', 1, 0, 255, 255, 255, 255]
+
+    #If player hits 's', following appears
+    if state.selectMenu[1] != 720
+      #White background for sprite selection
+      outputs.primitives << [:solids, state.selectMenu[0], state.selectMenu[1], state.selectMenu[2], state.selectMenu[3], 255, 255, 255]
+
+      #Select tile label at the top of the screen
+      outputs.primitives << [:labels, state.bannerCords[0], state.bannerCords[1], "Select Sprite", 10]
+
+      #Places sprites in locations calculated in the defaults function
+      outputs.primitives += state.spriteCords.map do
+        |x, y, order|
+        [:sprites, x, y, state.spriteSize, state.spriteSize, 'sprites/image' + order.to_s + ".png"]
+      end
+    end
+
+    #Creates sprite following mouse to help indicate which sprite you have selected
+    outputs.primitives << [:sprites, inputs.mouse.position.x - 10, inputs.mouse.position.y,
+                           10, 10, 'sprites/image' + state.spriteSelected.to_s + ".png"]
+  end
+
+  def calc_world_lookup
+    if state.tile_size != state.previous_tile_size
+      state.previous_tile_size = state.tile_size
+      state.world_lookup = {}
+    end
+
+    return if state.world_lookup.keys.length > 0
+    return unless state.world.length > 0
+
+    #Searches through the world and finds the cordinates that exist
+    state.world_lookup = {}
+    state.world.each { |x, y| state.world_lookup[[x, y]] = true }
+    
+    #Assigns collision rects for every sprite drawn
+    state.world_collision_rects =
+      state.world_lookup
+          .keys
+          .map do |coord_x, coord_y|
+            s = state.tile_size
+            x = s * coord_x
+            y = s * coord_y
+            {
+              args:       [coord_x, coord_y],
+              left_right: [x,     y + 4, s,     s - 6],
+              top:        [x + 4, y + 6, s - 8, s - 6],
+              bottom:     [x + 1, y - 1, s - 2, s - 8],
+            }
+          end
+  end
+
+  def calc_player
+    state.dy += state.gravity      #Since acceleration is the change in velocity, the change in y (dy) increases every frame
+
+    calc_box_collision
+    calc_edge_collision
+
+    state.y += state.dy            #Since velocity is the change in position, the change in y increases by dy
+    state.x += state.dx            #Ditto line above but dx and x
+    state.dx *= 0.8               #Scales dx down
+  end
+
+  def calc_edge_collision
+    if state.y < 0                #Ensures that player doesn't fall below the map
+      state.y = 0
+      state.dy = 0
+    elsif state.y > 720 - state.tile_size    #Ensures player doesn't go insanely high
+      state.y = 720 - state.tile_size
+      state.dy = 0
+    end
+
+    #Ensures that player remains in the horizontal range its supposed to
+    if state.x >= 1280 - state.tile_size && state.dx > 0
+      state.x = 1280 - state.tile_size
+      state.dx = 0
+    elsif state.x <= 0 && state.dx < 0
+      state.x = 0
+      state.dx = 0
+    end
+  end
+
+  def collision_tollerance
+    0.0
+  end
+
+  def collision_ceiling!
+    return unless state.dy > 0
+
+    player_rect = [state.x, state.y + 0.1, state.tile_size, state.tile_size]
+
+    #Runs through all the sprites on the field and determines if the player hits the ceiling of sprite (hence "+0.1" above)
+    ceil_collisions = state.world_collision_rects
+                          .find_all { |r| r[:bottom].intersects_rect?(player_rect, collision_tollerance) }
+                          .first
+
+    return unless ceil_collisions
+    state.y = ceil_collisions[:bottom].y - state.tile_size
+    state.dy = 0
+  end
+
+  def collision_left!
+    return unless state.dx < 0
+    player_rect = [state.x - 0.1, state.y, state.tile_size, state.tile_size]
+    #Runs through all the sprites on the field and determines if the player hits the left side of sprite (hence "-0.1" above)
+    left_side_collisions = state.world_collision_rects
+                               .find_all { |r| r[:left_right].intersects_rect?(player_rect, collision_tollerance) }
+                               .first
+
+    return unless left_side_collisions
+    state.x = left_side_collisions[:left_right].right
+    state.dx = 0
+  end
+
+  def collision_right!
+    return unless state.dx > 0
+
+    player_rect = [state.x + 0.1, state.y, state.tile_size, state.tile_size]
+    #Runs through all the sprites on the field and determines if the player hits the right side of sprite (hence "-0.1" above)
+    right_side_collisions = state.world_collision_rects
+                                .find_all { |r| r[:left_right].intersects_rect?(player_rect, collision_tollerance) }
+                                .first
+
+    return unless right_side_collisions
+    state.x = right_side_collisions[:left_right].left - state.tile_size
+    state.dx = 0
+  end
+
+  def collision_floor!
+    return unless state.dy <= 0
+
+    player_rect = [state.x, state.y - 0.1, state.tile_size, state.tile_size]
+    #Runs through all the sprites on the field and determines if the player hits the bottom of sprite (hence "-0.1" above)
+    floor_collisions = state.world_collision_rects
+                           .find_all { |r| r[:top].intersects_rect?(player_rect, collision_tollerance) }
+                           .first
+
+    return unless floor_collisions
+    state.y = floor_collisions[:top].top
+    state.dy = 0
+  end
+
+  def calc_box_collision
+    return unless state.world_lookup.keys.length > 0
+    collision_floor!
+    collision_left!
+    collision_right!
+    collision_ceiling!
+  end
+
+  def calc_select
+    #Does the transition to bring down the select sprite screen
+    if state.mode == :selecting && state.selectMenu[1] > 0
+      state.selectMenu[1] -= 20
+      state.bannerCords[1] -= 20
+      state.spriteCords = state.spriteCords.map do |x, y, w, h|
+        [x, y - 20, w, h]
+      end
+    end
+    #Does the transition to leave the select sprite screen
+    if state.mode == :creating  && state.selectMenu[1] < 720
+      state.selectMenu[1] += 20
+      state.bannerCords[1] += 20
+      state.spriteCords = state.spriteCords.map do |x, y, w, h|
+        [x, y + 20, w, h]
+      end
+    end
+  end
+
+  def calc
+    if state.mode == :creating
+      calc_world_lookup
+      calc_player
+    end
+
+    #Constantly checks if criteria are met and if the select screen needs to be adjusted
+    calc_select
+  end
+
+  def to_coord point
+    [point.x.idiv(state.tile_size), point.y.idiv(state.tile_size)]    #Integer divides (idiv) point.x to turn into grid
+                                                                    #Then, you can just multiply each integer by state.tile_size
+                                                                    #later and huzzah. Grid coordinates
+  end
+
+  def process_inputs
+    #Based on keyboard input, the entity (:creating and :selecting) switch
+    if inputs.keyboard.key_held.s && state.mode == :creating
+      state.mode = :selecting
+      inputs.keyboard.clear                                      #VERY IMPORTANT! If not present, it'll flicker between on and off
+    elsif inputs.keyboard.key_held.s && state.mode == :selecting
+      state.mode = :creating
+      inputs.keyboard.clear                                      #VERY IMPORTANT! If not present, it'll flicker between on and off
+    end
+ 
+    if state.mode == :creating && state.selectMenu[1] == 720       #if the state.mode is back and if the menu has retreated back up
+      if inputs.mouse.down
+        state.world_lookup = {}
+        x, y = to_coord inputs.mouse.down.point                  #gets x, y coordinates for the grid
+    
+        if state.world.any? { |existingX, existingY, n| existingX == x && existingY == y }          #Checks if any cordinates duplicate
+          state.world = state.world.reject { |existingX, existingY, n| existingX == x && existingY == y } #erases tile space
+        else
+          state.world << [x, y, state.spriteSelected]             #If no duplicates, add the sprite
+        end
+      end
+
+      #Sets dx to 0 if the player lets go of arrow keys
+      if inputs.keyboard.key_up.right
+        state.dx = 0
+      elsif inputs.keyboard.key_up.left
+        state.dx = 0
+      end
+
+      #Sets dx to 3 in whatever direction the player chooses
+      if inputs.keyboard.key_held.right
+        state.dx =  3
+      elsif inputs.keyboard.key_held.left
+        state.dx = -3
+      end
+
+      #Sets dy to 5 to make the player ~fly~
+      if inputs.keyboard.key_held.space
+        state.dy = 5
+      end
+    end
+
+    #For each spriteCordinate added, check what sprite was selected
+    if state.mode == :selecting
+      state.spriteCords.map do
+        |x, y, order|
+        if inputs.mouse.down            #Important to check because if mouse.down doesn't exist, it'll throw an error
+          if inputs.mouse.down.point.x >= x && inputs.mouse.down.point.x <= x + state.spriteSize &&
+             inputs.mouse.down.point.y >= y && inputs.mouse.down.point.y <= y + state.spriteSize
+            state.spriteSelected = order
+          end
+        end
+      end
+    end
+
+  end
+end
+
+$platformer_physics = PoorManPlatformerPhysics.new
+
+def tick args
+  $platformer_physics.grid    = args.grid
+  $platformer_physics.inputs  = args.inputs
+  $platformer_physics.state    = args.state
+  $platformer_physics.outputs = args.outputs
+  $platformer_physics.tick
+end
